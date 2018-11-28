@@ -199,6 +199,7 @@ Resources:
         - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
         - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
         - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+        - arn:aws:iam::359819095054:policy/k8s-ECS-Registry
 
   NodeSecurityGroup:
     Type: AWS::EC2::SecurityGroup
@@ -207,6 +208,8 @@ Resources:
       VpcId:
         !Ref VpcId
       Tags:
+      - Key: Name
+        Value: !Sub ${ClusterName}-k8s-WorkerNode-SG
       - Key: !Sub "kubernetes.io/cluster/${ClusterName}"
         Value: 'owned'
 
@@ -214,12 +217,10 @@ Resources:
     Type: AWS::EC2::SecurityGroupIngress
     DependsOn: NodeSecurityGroup
     Properties:
-      Description: Allow node to communicate with each other
+      Description: Allow nodes to communicate with each other
       GroupId: !Ref NodeSecurityGroup
       SourceSecurityGroupId: !Ref NodeSecurityGroup
       IpProtocol: '-1'
-      FromPort: 0
-      ToPort: 65535
 
   NodeSecurityGroupFromControlPlaneIngress:
     Type: AWS::EC2::SecurityGroupIngress
@@ -228,42 +229,34 @@ Resources:
       Description: Allow worker Kubelets and pods to receive communication from the cluster control plane
       GroupId: !Ref NodeSecurityGroup
       SourceSecurityGroupId: !Ref ClusterControlPlaneSecurityGroup
-      IpProtocol: tcp
-      FromPort: 1025
-      ToPort: 65535
+      IpProtocol: '-1'
 
-  ControlPlaneEgressToNodeSecurityGroup:
-    Type: AWS::EC2::SecurityGroupEgress
-    DependsOn: NodeSecurityGroup
-    Properties:
-      Description: Allow the cluster control plane to communicate with worker Kubelet and pods
-      GroupId: !Ref ClusterControlPlaneSecurityGroup
-      DestinationSecurityGroupId: !Ref NodeSecurityGroup
-      IpProtocol: tcp
-      FromPort: 1025
-      ToPort: 65535
-
-  NodeSecurityGroupFromControlPlaneOn443Ingress:
+  NodeSecurityGroupPrimaryCidrIngress:
     Type: AWS::EC2::SecurityGroupIngress
     DependsOn: NodeSecurityGroup
     Properties:
       Description: Allow pods running extension API servers on port 443 to receive communication from cluster control plane
       GroupId: !Ref NodeSecurityGroup
-      SourceSecurityGroupId: !Ref ClusterControlPlaneSecurityGroup
-      IpProtocol: tcp
-      FromPort: 443
-      ToPort: 443
+      IpProtocol: '-1'
+      CidrIp: 10.96.132.0/22
 
-  ControlPlaneEgressToNodeSecurityGroupOn443:
-    Type: AWS::EC2::SecurityGroupEgress
+  NodeSecurityGroupSecondaryCidrIngress:
+    Type: AWS::EC2::SecurityGroupIngress
     DependsOn: NodeSecurityGroup
     Properties:
-      Description: Allow the cluster control plane to communicate with pods running extension API servers on port 443
-      GroupId: !Ref ClusterControlPlaneSecurityGroup
-      DestinationSecurityGroupId: !Ref NodeSecurityGroup
-      IpProtocol: tcp
-      FromPort: 443
-      ToPort: 443
+      Description: Allow pods running extension API servers on port 443 to receive communication from cluster control plane
+      GroupId: !Ref NodeSecurityGroup
+      IpProtocol: '-1'
+      CidrIp: 100.64.0.0/16
+
+  NodeSecurityGroupEksControlPlaneIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: NodeSecurityGroup
+    Properties:
+      Description: Allow pods running extension API servers on port 443 to receive communication from cluster control plane
+      GroupId: !Ref NodeSecurityGroup
+      IpProtocol: '-1'
+      CidrIp: 172.20.0.0/16
 
   ClusterControlPlaneSecurityGroupIngress:
     Type: AWS::EC2::SecurityGroupIngress
@@ -272,9 +265,7 @@ Resources:
       Description: Allow pods to communicate with the cluster API Server
       GroupId: !Ref ClusterControlPlaneSecurityGroup
       SourceSecurityGroupId: !Ref NodeSecurityGroup
-      IpProtocol: tcp
-      ToPort: 443
-      FromPort: 443
+      IpProtocol: '-1'
 
   NodeGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
@@ -319,6 +310,8 @@ Resources:
           !Sub |
             #!/bin/bash
             set -o xtrace
+            echo 'supersede domain-name-servers 8.8.8.8;' >> /etc/dhcp/dhclient.conf;
+            reboot -h now;
             /etc/eks/bootstrap.sh ${ClusterName} ${BootstrapArguments}
             /opt/aws/bin/cfn-signal --exit-code $? \
                      --stack  ${AWS::StackName} \
